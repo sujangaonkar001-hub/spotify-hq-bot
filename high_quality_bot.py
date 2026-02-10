@@ -1,28 +1,22 @@
-import os
-import logging
-import random
-import telegram
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.constants import ChatAction
+import asyncio
+import httpx
 
-# Set up logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+class HighQualityBot:
+    async def download_audio(self, url):
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(url)
+                response.raise_for_status()  # Raises an error for bad responses
+                with open('audio.mp3', 'wb') as audio_file:
+                    audio_file.write(response.content)
+            except httpx.HTTPStatusError as e:
+                print(f"HTTP error occurred: {e}")  # Handle HTTP errors
+            except Exception as e:
+                print(f"An error occurred: {e}")  # Handle other errors
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text('Hello! I am your Spotify HQ Bot.')
+async def main():
+    bot = HighQualityBot()
+    await bot.download_audio('https://example.com/high_quality_audio.mp3')
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text('Help!')
-
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await context.bot.send_chat_action(update.effective_chat.id, ChatAction.UPLOAD_AUDIO)
-    await update.message.reply_text(update.message.text)
-
-if __name__ == '__main__':
-    application = ApplicationBuilder().token(os.getenv('TELEGRAM_TOKEN')).build()
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('help', help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-    application.run_polling()
+if __name__ == "__main__":
+    asyncio.run(main())
