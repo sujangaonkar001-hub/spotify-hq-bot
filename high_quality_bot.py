@@ -16,7 +16,7 @@ class HighQualityBot:
 
 async def main():
     bot = HighQualityBot()
-    await bot.download_audio('https://example.com/high_quality_audio.mp3')
+    await bot.download_audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3')
 
 if __name__ == "__main__":
     asyncio.run(main())
