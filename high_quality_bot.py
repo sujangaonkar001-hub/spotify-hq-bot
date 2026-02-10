@@ -1,74 +1,64 @@
-import asyncio
 import os
-import httpx
 from flask import Flask
-from threading import Thread
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+import threading
+import time
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram import Update
-from telegram.ext import ContextTypes
+import httpx
+import asyncio
 
-# Flask app for Render (required to keep service alive)
 app = Flask(__name__)
 
 @app.route('/')
-def home():
-    return "High Quality Bot is running! 🎵 Send /start or audio links!"
-
-def run_flask():
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+@app.route('/health')
+def health():
+    return {"status": "High Quality Bot running!", "time": time.time()}
 
 class HighQualityBot:
-    def __init__(self, application):
-        self.application = application
-
-    async def download_audio(self, url, update):
-        async with httpx.AsyncClient() as client:
-            try:
-                await update.message.reply_text("⬇️ Downloading high quality audio...")
-                response = await client.get(url)
-                response.raise_for_status()
-                
-                with open('audio.mp3', 'wb') as audio_file:
-                    audio_file.write(response.content)
-                
-                await update.message.reply_audio(audio=open('audio.mp3', 'rb'), title="High Quality Audio")
-                os.remove('audio.mp3')  # Clean up
-            except httpx.HTTPStatusError as e:
-                await update.message.reply_text(f"❌ HTTP error: {e}")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Error: {e}")
+    async def process_audio(self, url: str, update: Update):
+        try:
+            await update.message.reply_text("⬇️ Downloading...")
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=60.0)
+                resp.raise_for_status()
+            
+            with open('temp.mp3', 'wb') as f:
+                f.write(resp.content)
+            
+            with open('temp.mp3', 'rb') as audio:
+                await update.message.reply_audio(audio=audio, title="High Quality 🎵")
+            
+            os.remove('temp.mp3')
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎵 High Quality Bot ready!\nSend me any audio/video URL and I'll send high quality MP3!")
+    await update.message.reply_text("🎵 Send me YouTube/audio URLs!")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
-    bot = HighQualityBot(context.application)
-    await bot.download_audio(url, update)
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+    bot = HighQualityBot()
+    await bot.process_audio(url, update)
 
-def main():
-    # Get bot token from environment (set in Render dashboard)
-    TOKEN = os.getenv('TELEGRAM_TOKEN')
-    if not TOKEN:
-        print("❌ Set TELEGRAM_TOKEN environment variable in Render dashboard!")
+def run_bot():
+    token = os.getenv('TELEGRAM_TOKEN')
+    if not token:
+        print("No TELEGRAM_TOKEN!")
         return
+    
+    app = Application.builder().token(token).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+    
+    print("🤖 Bot polling...")
+    app.run_polling(drop_pending_updates=True)
 
-    # Create Telegram bot
-    application = Application.builder().token(TOKEN).build()
-
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Start Flask in background
-    flask_thread = Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-
-    # Start bot polling
-    print("🚀 Bot started! Check https://your-render-url.onrender.com")
-    application.run_polling()
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
 
 if __name__ == "__main__":
-    main()
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    run_bot()
