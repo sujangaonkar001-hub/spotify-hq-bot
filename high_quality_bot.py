@@ -5,7 +5,8 @@ import asyncio
 import base64
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ChatAction
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import ChatAction
 import yt_dlp
 import requests
 from bs4 import BeautifulSoup
