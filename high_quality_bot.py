@@ -2,216 +2,119 @@ import os
 import re
 import logging
 import asyncio
+import base64
+from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ChatAction
 import yt_dlp
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
 import time
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class HighQualitySpotifyBot:
     def __init__(self, token):
         self.token = token
-        self.download_path = "./downloads"
+        self.download_path = "/tmp/downloads"  # Render tmp dir
         os.makedirs(self.download_path, exist_ok=True)
-    
+
     def extract_spotify_info(self, url):
-        """Extract song info from Spotify URL"""
-        # Track pattern
         track_match = re.search(r'spotify\.com/track/([a-zA-Z0-9]+)', url)
         if track_match:
-            spotify_id = track_match.group(1)
             try:
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-                response = requests.get(f"https://open.spotify.com/track/{spotify_id}", 
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                response = requests.get(f"https://open.spotify.com/track/{track_match.group(1)}", 
                                       headers=headers, timeout=10)
                 soup = BeautifulSoup(response.text, 'html.parser')
-                
                 title_tag = soup.find('meta', property='og:title')
-                if title_tag:
-                    title = title_tag['content']
-                    if ' - ' in title:
-                        song, artist = title.rsplit(' - ', 1)
-                        return {'title': song.strip(), 'artist': artist.strip()}
+                if title_tag and ' - ' in title_tag['content']:
+                    song, artist = title_tag['content'].rsplit(' - ', 1)
+                    return {'title': song.strip(), 'artist': artist.strip()}
             except:
                 pass
-        
-        # Fallback parsing from URL or basic search
-        if 'track/' in url:
-            parts = url.split('/')[-1].split('?')[0]
-            return {'title': f'Track {parts[:10]}', 'artist': 'Artist'}
-        
-        return None
+        return {'title': 'Track', 'artist': 'Artist'}
 
-    async def search_best_youtube(self, query):
-        """Search YouTube for HIGHEST quality audio"""
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,
-        }
+    async def download_audio(self, update, search_query, info):
+        await update.callback_query_edit_message_text("⬇️ Downloading 320kbps...")
         
-        loop = asyncio.get_event_loop()
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Try multiple search variants for best quality
-            searches = [
-                f"ytsearch1:{query} 320kbps",
-                f"ytsearch1:{query} high quality audio",
-                f"ytsearch1:{query} official audio"
-            ]
-            
-            for search_query in searches:
-                try:
-                    results = await loop.run_in_executor(
-                        None, lambda: ydl.extract_info(search_query, download=False)
-                    )
-                    if results and 'entries' in results and results['entries']:
-                        best = results['entries'][0]
-                        if best.get('duration', 0) < 600:  # Skip super long videos
-                            return best['url']
-                except:
-                    continue
-        return None
-
-    async def download_high_quality(self, youtube_url, filename):
-        """Download 320kbps MP3 with max quality"""
         ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',  # Prefer m4a for quality
-            'outtmpl': f'{self.download_path}/{filename}.%(ext)s',
+            'format': 'bestaudio/best',
+            'outtmpl': f'{self.download_path}/%(title)s.%(ext)s',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '320',  # MAX QUALITY
+                'preferredquality': '320',
             }],
-            'postprocessors': [{
-                'key': 'FFmpegMetadata',  # Embed metadata
-            }],
-            'embed_thumbnail': True,
-            'writethumbnail': True,
-            'ignoreerrors': False,
+            'quiet': True,
         }
         
-        loop = asyncio.get_event_loop()
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                await loop.run_in_executor(None, ydl.download, [youtube_url])
-            
-            # Find MP3 file
-            time.sleep(2)  # Wait for processing
-            for file in os.listdir(self.download_path):
-                if file.startswith(filename) and file.endswith('.mp3'):
-                    return os.path.join(self.download_path, file)
-        except Exception as e:
-            logger.error(f"High quality download failed: {e}")
-        
-        return None
+                info_dict = ydl.extract_info(f"ytsearch1:{search_query}", download=True)
+                filename = ydl.prepare_filename(info_dict).rsplit('.', 1)[0] + '.mp3'
+                return filename if os.path.exists(filename) else None
+        except:
+            return None
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        message = update.message
-        url = message.text.strip()
-        
-        await message.reply_chat_action("upload_document")
-        await message.reply_text("🔍 Detecting Spotify track...")
+        url = update.message.text.strip()
+        await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.UPLOAD_AUDIO)
         
         info = self.extract_spotify_info(url)
-        if not info:
-            await message.reply_text(
-                "❌ **Invalid Spotify link!**\n\n"
-                "📎 Send a **track** link:\n"
-                "`https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC`\n\n"
-                "✨ Or paste track name + artist",
-                parse_mode='Markdown'
-            )
-            return
+        search_query = f"{info['title']} {info['artist']} audio 320kbps"
         
-        await message.reply_text(
-            f"🎵 **{info['title']}**\n"
-            f"👤 **{info['artist']}**\n\n"
-            f"⬇️ Downloading **320kbps HQ** MP3...",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(f"🎵 **{info['title']} - {info['artist']}**\n⬇️ HQ Download...", 
+                                       parse_mode='Markdown')
         
-        # Enhanced search query
-        search_query = f'"{info["title"]}" "{info["artist"]}" audio high quality 320kbps'
-        youtube_url = await self.search_best_youtube(search_query)
+        filename = await self.download_audio(update, search_query, info)
         
-        if not youtube_url:
-            await message.reply_text("❌ No high-quality source found 😞\nTry another track!")
-            return
-        
-        # Safe filename (Telegram friendly)
-        safe_name = re.sub(r'[^\w\s\-]', '_', f"{info['title'][:60]} - {info['artist'][:30]}")
-        safe_name = re.sub(r'\s+', '_', safe_name)
-        
-        audio_path = await self.download_high_quality(youtube_url, safe_name)
-        
-        if audio_path and os.path.exists(audio_path):
-            file_size = os.path.getsize(audio_path) / (1024*1024)  # MB
-            if file_size > 50:
-                os.remove(audio_path)
-                await message.reply_text("❌ File too large (Telegram 50MB limit)\nTry a shorter track!")
-                return
-            
+        if filename and os.path.exists(filename):
             try:
-                with open(audio_path, 'rb') as audio:
-                    await message.reply_chat_action("upload_audio")
-                    await message.reply_audio(
-                        chat_id=message.chat_id,
+                with open(filename, 'rb') as audio:
+                    await update.message.reply_audio(
                         audio=audio,
                         title=info['title'],
                         performer=info['artist'],
-                        duration=180,  # 3 min max
-                        caption=f"🔥 **320kbps HQ**\n{info['title']} • {info['artist']}\n\n"
-                                f"💎 High Quality • Album Art Embedded"
+                        caption="🔥 320kbps HQ • Album Ready!"
                     )
-                
-                # Cleanup
-                os.remove(audio_path)
-                await message.reply_text("✅ **Download Complete!** 🎧\nSend next track!")
-                
-            except Exception as e:
-                logger.error(f"Send failed: {e}")
-                await message.reply_text("❌ Send failed. Try again!")
+                os.remove(filename)
+                await update.message.reply_text("✅ Next track? 🎧")
+            except:
+                await update.message.reply_text("❌ File too big (50MB limit)")
         else:
-            await message.reply_text("❌ Download failed. Server busy? Try later!")
+            await update.message.reply_text("❌ No results. Try another!")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎵 **HQ Spotify Downloader** 🎵\n\n"
-        "🔥 **320kbps High Quality MP3**\n"
-        "✨ Album art + metadata\n"
-        "⚡ Instant downloads\n\n"
-        "**Just paste Spotify track link!**\n\n"
-        "👇 Example:\n"
-        "`https://open.spotify.com/track/ABC123`",
+        "🎵 **HQ Spotify Bot**\n\n"
+        "Paste Spotify track link → **320kbps MP3** instant!\n\n"
+        "👇 https://open.spotify.com/track/ABC123",
         parse_mode='Markdown'
     )
 
 def main():
-    # ⚠️ GET NEW TOKEN FROM @BotFather!
-    TOKEN = os.getenv('BOT_TOKEN') or "PASTE_YOUR_NEW_TOKEN_HERE"
+    load_dotenv()
+    encoded_token = os.getenv('SPOTIFY_BOT_TOKEN')
     
-    if TOKEN == "PASTE_YOUR_NEW_TOKEN_HERE":
-        print("❌ ADD YOUR NEW BOT TOKEN!")
-        print("1. Message @BotFather")
-        print("2. /mybots → your bot → API Token → Revoke → New token")
-        print("3. Replace TOKEN above or use .env file")
+    if not encoded_token:
+        print("❌ SPOTIFY_BOT_TOKEN missing!")
+        return
+    
+    try:
+        TOKEN = base64.b64decode(encoded_token).decode('utf-8')
+    except:
+        print("❌ Invalid SPOTIFY_BOT_TOKEN!")
         return
     
     bot = HighQualitySpotifyBot(TOKEN)
-    
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
     
-    print("🚀 HQ Bot Started! High Quality 320kbps 🔥")
+    print("🚀 HQ Spotify Bot LIVE!")
     app.run_polling()
 
 if __name__ == '__main__':
