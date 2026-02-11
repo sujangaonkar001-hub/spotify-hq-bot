@@ -1,18 +1,13 @@
 import os
-from flask import Flask
+from flask import Flask, request
 import threading
 import time
+import asyncio
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram import Update
 import httpx
-import asyncio
 
 app = Flask(__name__)
-
-@app.route('/')
-@app.route('/health')
-def health():
-    return {"status": "High Quality Bot running!", "time": time.time()}
 
 class HighQualityBot:
     async def process_audio(self, url: str, update: Update):
@@ -41,47 +36,46 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot = HighQualityBot()
     await bot.process_audio(url, update)
 
-async def main():
-    """Main async bot runner - fixes threading conflicts"""
+# GLOBAL BOT INSTANCE
+bot_app = None
+
+@app.route('/', methods=['GET'])
+@app.route('/health', methods=['GET'])
+def health():
+    return {"status": "High Quality Bot running!", "time": time.time()}
+
+@app.route(f"/{os.getenv('TELEGRAM_TOKEN', 'webhook')}", methods=['POST'])
+async def webhook():
+    global bot_app
+    if not bot_app:
+        return "Bot not initialized", 503
+    
+    update = Update.de_json(request.get_json(), bot_app.bot)
+    await bot_app.process_update(update)
+    return "OK"
+
+def init_bot():
+    """Initialize bot with webhook"""
+    global bot_app
     token = os.getenv('TELEGRAM_TOKEN')
     if not token:
         print("❌ No TELEGRAM_TOKEN!")
         return
     
-    # Build app
-    application = Application.builder().token(token).build()
+    bot_app = Application.builder().token(token).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
-    
-    print("🤖 Bot polling...")
-    
-    # FIXED: Proper polling with conflict resolution
-    await application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
-        poll_interval=1.0,
-        timeout=10,
-        bootstrap_retries=5
-    )
-
-def run_bot():
-    """Sync wrapper for async main"""
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot stopped.")
+    # Set webhook
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{token}"
+    asyncio.run(bot_app.bot.set_webhook(webhook_url))
+    print(f"✅ Webhook set: {webhook_url}")
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
+    # Initialize bot first
+    init_bot()
     app.run(host="0.0.0.0", port=port, debug=False)
 
 if __name__ == "__main__":
-    # Flask daemon thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    time.sleep(2)  # Let Flask start
-    
-    # Bot main thread
-    run_bot()
+    run_flask()
