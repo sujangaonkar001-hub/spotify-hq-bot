@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 import threading
 import yt_dlp
 import glob
-import time
+import re
 
 app = Flask(__name__)
 
@@ -14,170 +14,129 @@ HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME')
 @app.route('/')
 @app.route('/health')
 def health():
-    return jsonify({"status": "🎵 BULLETPROOF Music Bot ✅", "debug": "logs now"})
+    return jsonify({"status": "⚡ ULTRA-FAST Music Bot ✅"})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json()
-    if not data or 'message' not in data: return "OK"
+    if not data: return "OK"
     
     chat_id = data['message']['chat']['id']
     text = data['message'].get('text', '').strip()
     
     if text == '/start':
-        send_message(chat_id, "🔥 **Music Bot** - Send ANY URL!\nSpotify/YouTube/TikTok")
+        send_message(chat_id, "⚡ **FAST Music Bot**\nSend URL → MP3 in 10s!")
         return "OK"
     
-    if text.startswith('http'):
-        threading.Thread(target=process_url, args=(chat_id, text)).start()
-        send_message(chat_id, "🔍 **Searching audio...**")
+    if 'http' in text:
+        threading.Thread(target=fast_download, args=(chat_id, text)).start()
+        send_message(chat_id, "⚡ **Downloading...**")
         return "OK"
     
     return "OK"
 
 def send_message(chat_id, text):
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                 json={"chat_id": chat_id, "text": text})
-
-def process_url(chat_id, url):
-    print(f"🔍 Processing: {url[:80]}")
-    
     try:
-        # Spotify conversion
-        if 'spotify.com/track/' in url:
-            url, title = spotify_to_yt(url)
-            send_message(chat_id, f"🔥 **Spotify found:** {title}")
-        
-        # Get metadata
-        info = extract_info(url)
-        if not info:
-            send_message(chat_id, "❌ **No video/audio found**")
-            return
-        
-        title = info.get('title', 'Track')
-        artist = info.get('uploader', 'Artist')
-        print(f"📺 Title: {title}")
-        
-        send_message(chat_id, f"⬇️ **{title[:60]}** by **{artist}**")
-        
-        # Download
-        if download_and_send(chat_id, url, title, artist):
-            send_message(chat_id, f"✅ **{title[:50]}** 🎵")
-        else:
-            send_message(chat_id, "❌ **Download failed** - try YouTube")
-            
-    except Exception as e:
-        print(f"ERROR: {e}")
-        send_message(chat_id, f"❌ **Error:** {str(e)[:60]}")
-
-def extract_info(url):
-    """Extract video info safely"""
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': False
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=False)
-    except:
-        return None
-
-def spotify_to_yt(spotify_url):
-    """Spotify → YouTube search"""
-    try:
-        track_id = spotify_url.split('track/')[1].split('?')[0]
-        resp = requests.get(f"https://open.spotify.com/track/{track_id}")
-        
-        title = re.search(r'"name":"([^"]+?)"', resp.text, re.DOTALL)
-        artist = re.search(r'"name":"([^"]+?)"\s*,\s*"type":"artist"', resp.text)
-        
-        title = title.group(1) if title else "Spotify Track"
-        artist = artist.group(1) if artist else "Artist"
-        
-        query = f'{artist} {title} official audio'
-        yt_search = f"https://www.youtube.com/results?search_query={requests.utils.quote(query)}"
-        return yt_search, title
-    except:
-        return spotify_url, "Music Track"
-
-def download_and_send(chat_id, url, title, artist):
-    """Download + send with DEBUG"""
-    temp_dir = 'temp_downloads'
-    os.makedirs(temp_dir, exist_ok=True)
-    
-    ydl_opts = {
-        'format': 'bestaudio/best[height<=480]/best',
-        'outtmpl': f'{temp_dir}/%(uploader)s - %(title)s.%(ext)s',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'postprocessor_args': ['-y'],  # Overwrite
-        'quiet': False,  # SHOW logs
-        'noplaylist': True,
-    }
-    
-    try:
-        print("⬇️ Starting yt-dlp...")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        
-        # Find MP3 file
-        mp3_files = glob.glob(f'{temp_dir}/*.mp3')
-        if mp3_files:
-            filename = mp3_files[0]
-            print(f"✅ Found MP3: {os.path.basename(filename)} ({os.path.getsize(filename)/1024/1024:.1f}MB)")
-            
-            if os.path.getsize(filename) > 48 * 1024 * 1024:
-                send_message(chat_id, "❌ **File too big** (>48MB)")
-                cleanup(temp_dir)
-                return False
-            
-            # Send!
-            with open(filename, 'rb') as audio:
-                files = {'audio': (f"{title[:80]}.mp3", audio, 'audio/mpeg')}
-                resp = requests.post(
-                    f"https://api.telegram.org/bot{TOKEN}/sendAudio",
-                    data={
-                        'chat_id': chat_id,
-                        'title': title[:100],
-                        'performer': artist[:50]
-                    },
-                    files=files,
-                    timeout=300
-                )
-            
-            print(f"📤 Telegram response: {resp.json()}")
-            cleanup(temp_dir)
-            return resp.json().get('ok', False)
-        
-        print("❌ No MP3 found")
-        cleanup(temp_dir)
-        return False
-        
-    except Exception as e:
-        print(f"Download error: {e}")
-        cleanup(temp_dir)
-        return False
-
-def cleanup(temp_dir):
-    """Clean temp files"""
-    for f in glob.glob('temp_downloads/*'):
-        try: os.unlink(f)
-        except: pass
-    try: os.rmdir(temp_dir)
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                     json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True})
     except: pass
 
+def fast_download(chat_id, url):
+    print(f"⚡ {url[:60]}")
+    
+    # Spotify → YouTube
+    if 'spotify.com/track/' in url:
+        url = spotify_search(url)
+    
+    try:
+        # ULTRA-FAST download settings
+        ydl_opts = {
+            'format': 'bestaudio/best',  # FASTEST audio
+            'outtmpl': 'audio.%(ext)s',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '128',  # Smaller = FASTER
+            }],
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 10,  # 10s timeout
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Extract FIRST (fast)
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'Music')[:80]
+            artist = info.get('uploader', 'Artist')[:40]
+            
+            print(f"🎵 {title} - {artist}")
+            send_message(chat_id, f"⚡ **{title}**\n👤 **{artist}**")
+            
+            # Download (5-10s)
+            ydl.download([url])
+        
+        # Send MP3
+        mp3_file = glob.glob("audio.*.mp3")
+        if mp3_file:
+            send_mp3(chat_id, mp3_file[0], title, artist)
+        else:
+            send_message(chat_id, "❌ No audio")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+        send_message(chat_id, "❌ Failed - try YouTube")
+
+def spotify_search(spotify_url):
+    """Fast Spotify → YouTube"""
+    try:
+        track_id = spotify_url.split('track/')[1].split('?')[0]
+        resp = requests.get(f"https://open.spotify.com/track/{track_id}", timeout=5)
+        
+        title = re.search(r'"name":"(.+?)"', resp.text)
+        artist = re.search(r'"name":"(.+?)"\s*,\s*"type":"artist"', resp.text)
+        
+        query = f"{artist.group(1) if artist else ''} {title.group(1) if title else ''} audio"
+        return f"https://www.youtube.com/results?search_query={requests.utils.quote(query)}"
+    except:
+        return "https://www.youtube.com/results?search_query=music"
+
+def send_mp3(chat_id, filename, title, artist):
+    try:
+        filesize = os.path.getsize(filename)
+        if filesize > 45 * 1024 * 1024:  # 45MB
+            os.unlink(filename)
+            send_message(chat_id, "❌ Too big")
+            return
+        
+        with open(filename, 'rb') as f:
+            files = {'audio': (f"{title}.mp3", f, 'audio/mpeg')}
+            resp = requests.post(
+                f"https://api.telegram.org/bot{TOKEN}/sendAudio",
+                data={'chat_id': chat_id, 'title': title, 'performer': artist},
+                files=files,
+                timeout=60
+            )
+        
+        os.unlink(filename)
+        if resp.json().get('ok'):
+            print("✅ SENT")
+        else:
+            print(f"Telegram error: {resp.text}")
+            
+    except Exception as e:
+        print(f"Send error: {e}")
+        try: os.unlink(filename)
+        except: pass
+
 def setup_webhook():
-    requests.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
-    webhook_url = f"https://{HOSTNAME}/webhook"
-    resp = requests.post(f"https://api.telegram.org/bot{TOKEN}/setWebhook", json={"url": webhook_url})
-    print(f"✅ Webhook: {resp.json()}")
+    if TOKEN and HOSTNAME:
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/setWebhook", 
+                     json={"url": f"https://{HOSTNAME}/webhook"})
+        print("✅ Webhook OK")
 
 if __name__ == "__main__":
-    print("🚀 BULLETPROOF Music Bot")
     setup_webhook()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
